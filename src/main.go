@@ -3,48 +3,60 @@
 package main
 
 import (
+    "os"
+    "os/exec"
     "path/filepath"
+    "runtime"
     "strings"
+    "sync/atomic"
     "syscall"
     "unsafe"
 )
 
 const (
+    appVersion = "2.0.0"
+
+    // Window messages
+    WM_DESTROY       = 0x0002
+    WM_CLOSE         = 0x0010
+    WM_PAINT         = 0x000F
+    WM_ERASEBKGND    = 0x0014
+    WM_NCHITTEST     = 0x0084
+    WM_KEYDOWN       = 0x0100
+    WM_KEYUP         = 0x0101
+    WM_SYSKEYDOWN    = 0x0104
+    WM_SYSKEYUP      = 0x0105
+    WM_NCLBUTTONDOWN = 0x00A1
+    WM_LBUTTONDOWN   = 0x0201
+    WM_RBUTTONDOWN   = 0x0204
+    WM_APPCOMMAND    = 0x0319
+    WM_QUIT          = 0x0012
+
+    HTCLIENT  = 1
+    HTCAPTION = 2
+
+    // Keyboard hook
     WH_KEYBOARD_LL = 13
-    HC_ACTION       = 0
+    HC_ACTION      = 0
+    VK_ESCAPE      = 0x1B
 
-    WM_DESTROY      = 0x0002
-    WM_PAINT        = 0x000F
-    WM_ERASEBKGND   = 0x0014
-    WM_MOUSEMOVE    = 0x0200
-    WM_LBUTTONDOWN  = 0x0201
-    WM_LBUTTONUP    = 0x0202
-    WM_RBUTTONUP    = 0x0205
-    WM_KEYDOWN      = 0x0100
-    WM_KEYUP        = 0x0101
-    WM_SYSKEYDOWN   = 0x0104
-    WM_SYSKEYUP     = 0x0105
-    WM_APPCOMMAND   = 0x0319
-
-    VK_ESCAPE = 0x1B
-
+    // VLC / window commands
     APPCOMMAND_MEDIA_PAUSE = 47
-    SW_MINIMIZE             = 6
-    SW_SHOWNOACTIVATE       = 4
+    SW_MINIMIZE            = 6
+    SW_SHOWNOACTIVATE      = 4
 
-    WS_POPUP        = 0x80000000
-    WS_EX_TOPMOST   = 0x00000008
+    // Window styles
+    WS_POPUP         = 0x80000000
+    WS_EX_TOPMOST    = 0x00000008
     WS_EX_TOOLWINDOW = 0x00000080
-    WS_EX_NOACTIVATE = 0x08000000
 
-    SWP_NOSIZE     = 0x0001
-    SWP_NOZORDER   = 0x0004
-    SWP_NOACTIVATE = 0x0010
-
+    // Process access
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    ERROR_ALREADY_EXISTS              = 183
 
+    // Drawing
     PS_SOLID = 0
+
+    // Screen metric
     SM_CXSCREEN = 0
 )
 
@@ -63,7 +75,7 @@ type RECT struct {
 type MSG struct {
     Hwnd     uintptr
     Message  uint32
-    _        uint32
+    _        uint32 // alignment padding on 64-bit Windows
     WParam   uintptr
     LParam   uintptr
     Time     uint32
@@ -118,51 +130,51 @@ var (
     pDispatchMessageW = user32.NewProc("DispatchMessageW")
     pPostQuitMessage  = user32.NewProc("PostQuitMessage")
     pDestroyWindow    = user32.NewProc("DestroyWindow")
+    pSendMessageW     = user32.NewProc("SendMessageW")
+    pReleaseCapture   = user32.NewProc("ReleaseCapture")
     pBeginPaint       = user32.NewProc("BeginPaint")
     pEndPaint         = user32.NewProc("EndPaint")
-    pGetCursorPos     = user32.NewProc("GetCursorPos")
-    pGetWindowRect    = user32.NewProc("GetWindowRect")
-    pSetWindowPos     = user32.NewProc("SetWindowPos")
-    pSetCapture       = user32.NewProc("SetCapture")
-    pReleaseCapture   = user32.NewProc("ReleaseCapture")
-    pGetSystemMetrics = user32.NewProc("GetSystemMetrics")
     pLoadCursorW      = user32.NewProc("LoadCursorW")
+    pSendNotifyMsgW   = user32.NewProc("SendNotifyMessageW")
+    pShowWindowAsync  = user32.NewProc("ShowWindowAsync")
     pSetProcessDPIAware = user32.NewProc("SetProcessDPIAware")
+    pGetSystemMetrics = user32.NewProc("GetSystemMetrics")
 
-    pSetWindowsHookExW = user32.NewProc("SetWindowsHookExW")
-    pCallNextHookEx    = user32.NewProc("CallNextHookEx")
+    pSetWindowsHookExW   = user32.NewProc("SetWindowsHookExW")
+    pCallNextHookEx      = user32.NewProc("CallNextHookEx")
     pUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
+    pPostThreadMessageW  = user32.NewProc("PostThreadMessageW")
 
     pEnumWindows              = user32.NewProc("EnumWindows")
     pIsWindowVisible          = user32.NewProc("IsWindowVisible")
     pGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
-    pSendMessageW             = user32.NewProc("SendMessageW")
-    pShowWindowAsync          = user32.NewProc("ShowWindowAsync")
+    pGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
 
     pCreateSolidBrush = gdi32.NewProc("CreateSolidBrush")
     pCreatePen        = gdi32.NewProc("CreatePen")
     pSelectObject     = gdi32.NewProc("SelectObject")
     pEllipse          = gdi32.NewProc("Ellipse")
     pArc              = gdi32.NewProc("Arc")
+    pRectangle        = gdi32.NewProc("Rectangle")
     pDeleteObject     = gdi32.NewProc("DeleteObject")
 
-    pGetModuleHandleW          = kernel32.NewProc("GetModuleHandleW")
-    pOpenProcess               = kernel32.NewProc("OpenProcess")
+    pGetModuleHandleW           = kernel32.NewProc("GetModuleHandleW")
+    pOpenProcess                = kernel32.NewProc("OpenProcess")
     pQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
-    pCloseHandle               = kernel32.NewProc("CloseHandle")
-    pCreateMutexW              = kernel32.NewProc("CreateMutexW")
-    pGetLastError              = kernel32.NewProc("GetLastError")
+    pCloseHandle                = kernel32.NewProc("CloseHandle")
+    pCreateMutexW               = kernel32.NewProc("CreateMutexW")
+    pGetLastError               = kernel32.NewProc("GetLastError")
+    pGetCurrentThreadId         = kernel32.NewProc("GetCurrentThreadId")
 )
 
 var (
-    hHook uintptr
+    windowCallback   uintptr
     keyboardCallback uintptr
-    windowCallback uintptr
-    escapeSuppressed bool
-
-    dragging bool
-    dragCursorStart POINT
-    dragWindowStart RECT
+    hookHandle       uintptr
+    hookThreadID     atomic.Uint32
+    escapeDown       atomic.Bool
+    appClosing       atomic.Bool
+    singletonMutex   uintptr
 )
 
 func rgb(r, g, b byte) uintptr {
@@ -179,22 +191,22 @@ func processName(pid uint32) string {
     buf := make([]uint16, 32768)
     size := uint32(len(buf))
     ok, _, _ := pQueryFullProcessImageNameW.Call(
-        h,
-        0,
+        h, 0,
         uintptr(unsafe.Pointer(&buf[0])),
         uintptr(unsafe.Pointer(&size)),
     )
     if ok == 0 || size == 0 {
         return ""
     }
-    full := syscall.UTF16ToString(buf[:size])
-    return strings.ToLower(filepath.Base(full))
+    return strings.ToLower(filepath.Base(syscall.UTF16ToString(buf[:size])))
 }
 
+// Find the most likely main visible VLC window. Prefer a window with a title.
 func findVLCWindow() uintptr {
-    var found uintptr
+    var titled uintptr
+    var fallback uintptr
 
-    cb := syscall.NewCallback(func(hwnd uintptr, lParam uintptr) uintptr {
+    cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
         visible, _, _ := pIsWindowVisible.Call(hwnd)
         if visible == 0 {
             return 1
@@ -202,54 +214,94 @@ func findVLCWindow() uintptr {
 
         var pid uint32
         pGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-        if pid != 0 && processName(pid) == "vlc.exe" {
-            found = hwnd
+        if pid == 0 || processName(pid) != "vlc.exe" {
+            return 1
+        }
+
+        if fallback == 0 {
+            fallback = hwnd
+        }
+        titleLen, _, _ := pGetWindowTextLengthW.Call(hwnd)
+        if titleLen > 0 {
+            titled = hwnd
             return 0
         }
         return 1
     })
 
     pEnumWindows.Call(cb, 0)
-    return found
+    if titled != 0 {
+        return titled
+    }
+    return fallback
 }
 
 func pauseAndMinimizeVLC(hwnd uintptr) {
-    // Dedicated MEDIA_PAUSE command. Unlike play/pause toggle, this should not
-    // resume playback if VLC is already paused.
-    pSendMessageW.Call(
-        hwnd,
-        WM_APPCOMMAND,
-        hwnd,
-        uintptr(APPCOMMAND_MEDIA_PAUSE<<16),
-    )
+    // Asynchronous pause notification so a hung VLC cannot stall our hook thread.
+    pSendNotifyMsgW.Call(hwnd, WM_APPCOMMAND, hwnd, uintptr(APPCOMMAND_MEDIA_PAUSE<<16))
     pShowWindowAsync.Call(hwnd, SW_MINIMIZE)
 }
 
 func keyboardProc(nCode int, wParam uintptr, lParam uintptr) uintptr {
-    if nCode == HC_ACTION {
+    if nCode == HC_ACTION && !appClosing.Load() {
         kb := (*KBDLLHOOKSTRUCT)(unsafe.Pointer(lParam))
         if kb.VkCode == VK_ESCAPE {
             switch uint32(wParam) {
             case WM_KEYDOWN, WM_SYSKEYDOWN:
-                if escapeSuppressed {
+                if escapeDown.Load() {
                     return 1
                 }
                 if hwnd := findVLCWindow(); hwnd != 0 {
-                    escapeSuppressed = true
+                    escapeDown.Store(true)
                     pauseAndMinimizeVLC(hwnd)
                     return 1
                 }
             case WM_KEYUP, WM_SYSKEYUP:
-                if escapeSuppressed {
-                    escapeSuppressed = false
+                if escapeDown.Swap(false) {
                     return 1
                 }
             }
         }
     }
 
-    ret, _, _ := pCallNextHookEx.Call(hHook, uintptr(nCode), wParam, lParam)
+    ret, _, _ := pCallNextHookEx.Call(hookHandle, uintptr(nCode), wParam, lParam)
     return ret
+}
+
+func keyboardHookLoop(hInstance uintptr, ready chan<- bool) {
+    runtime.LockOSThread()
+    defer runtime.UnlockOSThread()
+
+    tid, _, _ := pGetCurrentThreadId.Call()
+    hookThreadID.Store(uint32(tid))
+
+    keyboardCallback = syscall.NewCallback(keyboardProc)
+    h, _, _ := pSetWindowsHookExW.Call(WH_KEYBOARD_LL, keyboardCallback, hInstance, 0)
+    if h == 0 {
+        ready <- false
+        return
+    }
+    hookHandle = h
+    ready <- true
+
+    var msg MSG
+    for {
+        ret, _, _ := pGetMessageW.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
+        if int32(ret) <= 0 {
+            break
+        }
+        // Low-level keyboard hooks only need a live message loop.
+    }
+
+    pUnhookWindowsHookEx.Call(h)
+    hookHandle = 0
+}
+
+func stopKeyboardHook() {
+    appClosing.Store(true)
+    if tid := hookThreadID.Load(); tid != 0 {
+        pPostThreadMessageW.Call(uintptr(tid), WM_QUIT, 0, 0)
+    }
 }
 
 func paintSmiley(hwnd uintptr) {
@@ -260,24 +312,30 @@ func paintSmiley(hwnd uintptr) {
     }
     defer pEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 
+    // White background makes the full 20x20 hit area obvious and reliable.
+    whiteBrush, _, _ := pCreateSolidBrush.Call(rgb(255, 255, 255))
     yellowBrush, _, _ := pCreateSolidBrush.Call(rgb(255, 216, 77))
     blackBrush, _, _ := pCreateSolidBrush.Call(rgb(32, 32, 32))
     blackPen, _, _ := pCreatePen.Call(PS_SOLID, 1, rgb(32, 32, 32))
+    whitePen, _, _ := pCreatePen.Call(PS_SOLID, 1, rgb(255, 255, 255))
 
+    defer pDeleteObject.Call(whiteBrush)
     defer pDeleteObject.Call(yellowBrush)
     defer pDeleteObject.Call(blackBrush)
     defer pDeleteObject.Call(blackPen)
+    defer pDeleteObject.Call(whitePen)
 
-    oldBrush, _, _ := pSelectObject.Call(hdc, yellowBrush)
-    oldPen, _, _ := pSelectObject.Call(hdc, blackPen)
+    oldBrush, _, _ := pSelectObject.Call(hdc, whiteBrush)
+    oldPen, _, _ := pSelectObject.Call(hdc, whitePen)
+    pRectangle.Call(hdc, 0, 0, 20, 20)
 
+    pSelectObject.Call(hdc, yellowBrush)
+    pSelectObject.Call(hdc, blackPen)
     pEllipse.Call(hdc, 1, 1, 19, 19)
 
     pSelectObject.Call(hdc, blackBrush)
     pEllipse.Call(hdc, 5, 6, 8, 9)
     pEllipse.Call(hdc, 12, 6, 15, 9)
-
-    // Smile arc.
     pArc.Call(hdc, 5, 7, 15, 16, 5, 10, 15, 10)
 
     pSelectObject.Call(hdc, oldBrush)
@@ -286,6 +344,9 @@ func paintSmiley(hwnd uintptr) {
 
 func windowProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
     switch msg {
+    case WM_NCHITTEST:
+        return HTCLIENT
+
     case WM_PAINT:
         paintSmiley(hwnd)
         return 0
@@ -294,42 +355,22 @@ func windowProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
         return 1
 
     case WM_LBUTTONDOWN:
-        dragging = true
-        pGetCursorPos.Call(uintptr(unsafe.Pointer(&dragCursorStart)))
-        pGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&dragWindowStart)))
-        pSetCapture.Call(hwnd)
+        // Let Windows perform its own native window-move modal loop.
+        // This avoids a custom WM_MOUSEMOVE drag implementation entirely.
+        pReleaseCapture.Call()
+        pSendMessageW.Call(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0)
         return 0
 
-    case WM_MOUSEMOVE:
-        if dragging {
-            var p POINT
-            pGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
-            x := dragWindowStart.Left + (p.X - dragCursorStart.X)
-            y := dragWindowStart.Top + (p.Y - dragCursorStart.Y)
-            pSetWindowPos.Call(
-                hwnd,
-                0,
-                uintptr(x),
-                uintptr(y),
-                0,
-                0,
-                SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE,
-            )
-        }
+    case WM_RBUTTONDOWN:
+        pDestroyWindow.Call(hwnd)
         return 0
 
-    case WM_LBUTTONUP:
-        if dragging {
-            dragging = false
-            pReleaseCapture.Call()
-        }
-        return 0
-
-    case WM_RBUTTONUP:
+    case WM_CLOSE:
         pDestroyWindow.Call(hwnd)
         return 0
 
     case WM_DESTROY:
+        stopKeyboardHook()
         pPostQuitMessage.Call(0)
         return 0
     }
@@ -338,26 +379,61 @@ func windowProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintpt
     return ret
 }
 
-func alreadyRunning() bool {
-    name, _ := syscall.UTF16PtrFromString("Local\\VLC_ESC_Smiley_20x20")
+func killKnownOldBuilds() {
+    // Older builds could leave behind an unresponsive UI thread. Kill only the
+    // exact filenames shipped by earlier versions, never wildcard processes.
+    oldNames := []string{
+        "VLC_ESC_Smiley.exe",
+        "VLC_ESC_Smiley_v1.1.exe",
+        "VLC_ESC_Smiley_v1.2.exe",
+        "VLC_ESC_Smiley_v1.3.exe",
+        "VLC_ESC_Smiley_v1.4.exe",
+    }
+    current := strings.ToLower(filepath.Base(os.Args[0]))
+    for _, name := range oldNames {
+        if strings.ToLower(name) == current {
+            continue
+        }
+        cmd := exec.Command("taskkill.exe", "/F", "/IM", name)
+        cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+        _ = cmd.Run()
+    }
+}
+
+func acquireSingleton() bool {
+    name, _ := syscall.UTF16PtrFromString("Local\\VLC_ESC_Smiley_20x20_v2")
     h, _, _ := pCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
     if h == 0 {
         return false
     }
-    err, _, _ := pGetLastError.Call()
-    return err == ERROR_ALREADY_EXISTS
+    singletonMutex = h
+    // ERROR_ALREADY_EXISTS = 183
+    errCode, _, _ := pGetLastError.Call()
+    return errCode != 183
 }
 
 func main() {
-    if alreadyRunning() {
+    // CRITICAL: Win32 windows and their message queue are thread-affine.
+    // Keep this goroutine on one OS thread from before window creation until
+    // after the GUI message loop exits.
+    runtime.LockOSThread()
+    defer runtime.UnlockOSThread()
+
+    killKnownOldBuilds()
+    if !acquireSingleton() {
         return
     }
+    defer func() {
+        if singletonMutex != 0 {
+            pCloseHandle.Call(singletonMutex)
+        }
+    }()
 
     pSetProcessDPIAware.Call()
 
     hInstance, _, _ := pGetModuleHandleW.Call(0)
-    className, _ := syscall.UTF16PtrFromString("VLCESCSmileyWindow")
-    title, _ := syscall.UTF16PtrFromString("VLC ESC Smiley")
+    className, _ := syscall.UTF16PtrFromString("VLCESCSmileyWindowV2")
+    title, _ := syscall.UTF16PtrFromString("VLC ESC Smiley " + appVersion)
 
     windowCallback = syscall.NewCallback(windowProc)
     cursor, _, _ := pLoadCursorW.Call(0, 32512) // IDC_ARROW
@@ -382,16 +458,13 @@ func main() {
     }
 
     hwnd, _, _ := pCreateWindowExW.Call(
-        WS_EX_TOPMOST|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,
+        WS_EX_TOPMOST|WS_EX_TOOLWINDOW,
         uintptr(unsafe.Pointer(className)),
         uintptr(unsafe.Pointer(title)),
         WS_POPUP,
-        uintptr(x),
-        35,
-        20,
-        20,
-        0,
-        0,
+        uintptr(x), 35,
+        20, 20,
+        0, 0,
         hInstance,
         0,
     )
@@ -399,18 +472,12 @@ func main() {
         return
     }
 
-    keyboardCallback = syscall.NewCallback(keyboardProc)
-    hHook, _, _ = pSetWindowsHookExW.Call(
-        WH_KEYBOARD_LL,
-        keyboardCallback,
-        hInstance,
-        0,
-    )
-    if hHook == 0 {
+    ready := make(chan bool, 1)
+    go keyboardHookLoop(hInstance, ready)
+    if ok := <-ready; !ok {
         pDestroyWindow.Call(hwnd)
         return
     }
-    defer pUnhookWindowsHookEx.Call(hHook)
 
     pShowWindow.Call(hwnd, SW_SHOWNOACTIVATE)
     pUpdateWindow.Call(hwnd)
@@ -424,4 +491,6 @@ func main() {
         pTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
         pDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
     }
+
+    stopKeyboardHook()
 }

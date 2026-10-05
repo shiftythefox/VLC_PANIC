@@ -1,59 +1,44 @@
-# VLC ESC Smiley
+# VLC ESC Smiley v2.0
 
-Pici Windows-segedprogram VLC-hez.
+Apró Windows segédprogram VLC-hez.
 
-## Mit csinal?
+## Funkció
 
-- Egy **20x20 pixeles smiley** jelenik meg, keret nelkul.
-- Mindig a tobbi ablak felett marad.
-- **Bal egergombbal huzhato** a kepernyon.
-- **Jobb klikk a smiley-n: kilepes.**
-- Amig fut, globalisan figyeli az **ESC** billentyut.
-- Ha ESC lenyomasakor fut egy lathato `vlc.exe` ablak:
-  1. VLC kap egy dedikalt **MEDIA_PAUSE** parancsot;
-  2. VLC minimalizalodik a talcara;
-  3. az adott ESC lenyomast nem kapja meg a VLC.
-- Ha VLC nem fut, az ESC normalisan mukodik.
-- Egyszerre csak egy peldany indul el.
+- 20×20 pixeles smiley, mindig legfelül.
+- Bal egérgombbal megfogható és arrébb húzható.
+- Jobb egérgombbal bezárható.
+- Globális `ESC` figyelés.
+- Ha fut VLC és `ESC`-et nyomsz:
+  - VLC kap egy `MEDIA_PAUSE` parancsot;
+  - VLC minimalizálódik;
+  - az adott ESC-et a program elnyeli.
+- Ha VLC nem fut, az ESC normálisan működik.
+- Nincs szükség Pythonra vagy külön futtatókörnyezetre.
 
-## Kesz EXE
+## Mi változott a v2.0-ban?
 
-A kiadott `VLC_ESC_Smiley.exe` onallo Windows x64 program, **Python nem kell hozza**.
+A GUI teljesen újra lett írva minimál Win32 működésre.
 
-## Forditas forrasbol
+A legfontosabb javítás: a GUI fő goroutine indulástól a message loop végéig ugyanahhoz az OS-threadhez van rögzítve (`runtime.LockOSThread`). A Win32 ablak és az üzenetsor thread-affine; a korábbi verziók ezt nem garantálták. Ez megmagyarázta azt a hibát, hogy az ablak látszott és az ESC-hook működött, de a smiley nem reagált egérre.
 
-### Windows
+A húzásnál nincs saját `WM_MOUSEMOVE` logika: bal kattintáskor a program natív Windows ablakmozgatást indít (`WM_NCLBUTTONDOWN + HTCAPTION`).
 
-1. Telepitsd a Go-t: https://go.dev/dl/
-2. Futtasd a `build.bat` fajlt.
-3. Az eredmeny: `release\VLC_ESC_Smiley.exe`
+Az ESC-hook továbbra is külön, saját OS-threaden fut.
 
-Vagy parancssorbol:
+Induláskor a v2.0 megpróbálja leállítani a korábban kiadott, pontosan ismert v1.x EXE-neveket, hogy ne maradjon a képernyőn egy régi hibás példány.
+
+## Build
+
+Windows + Go 1.23 vagy újabb:
 
 ```bat
-set GOOS=windows
-set GOARCH=amd64
-go build -buildvcs=false -trimpath -ldflags="-s -w -H=windowsgui" -o release\VLC_ESC_Smiley.exe .\src
+build.bat
 ```
 
-## Projekt szerkezete
+A kész fájl:
 
-```text
-VLC_ESC_Smiley_Git/
-├─ src/
-│  └─ main.go                  # natív Windows/Go valtozat
-├─ python/
-│  └─ VLC_ESC_Smiley.py        # eredeti Python valtozat
-├─ release/
-│  └─ VLC_ESC_Smiley.exe       # kesz x64 build
-├─ .github/workflows/
-│  └─ build-windows.yml        # GitHub Actions build
-├─ .gitignore
-├─ build.bat
-├─ go.mod
-└─ README.md
-```
+`release\VLC_ESC_Smiley_v2.exe`
 
-## Megjegyzes
+## Forrás
 
-A natív Go valtozat csak Windowsra keszult. A globalis billentyuzetfigyeleshez nem telepit drivert es nem hasznal kulso csomagot; a Windows sajat low-level keyboard hook API-jat hasznalja.
+`src/main.go`

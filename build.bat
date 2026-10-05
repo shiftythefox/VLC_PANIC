@@ -1,28 +1,16 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-
-where go >nul 2>nul
-if errorlevel 1 (
-  echo [HIBA] A Go nincs telepitve vagy nincs a PATH-ban.
-  echo Letoltes: https://go.dev/dl/
-  pause
-  exit /b 1
-)
-
 if not exist release mkdir release
-
-echo VLC_ESC_Smiley.exe epitese...
 set GOOS=windows
 set GOARCH=amd64
-go build -buildvcs=false -trimpath -ldflags="-s -w -H=windowsgui" -o release\VLC_ESC_Smiley.exe .\src
-
+go build -trimpath -ldflags "-H=windowsgui -s -w" -o release\VLC_ESC_Smiley_v2.exe .\src
 if errorlevel 1 (
-  echo [HIBA] A build sikertelen.
+  echo.
+  echo BUILD FAILED
   pause
   exit /b 1
 )
-
 echo.
-echo Kesz: release\VLC_ESC_Smiley.exe
+echo Built: release\VLC_ESC_Smiley_v2.exe
 pause
